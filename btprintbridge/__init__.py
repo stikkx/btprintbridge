@@ -1,0 +1,1 @@
+"""btprintbridge: Bluetooth bridge for Brother PT-P710BT label printers."""
