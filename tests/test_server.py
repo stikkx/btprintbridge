@@ -11,6 +11,8 @@ from btprintbridge.transport import PrinterBusy, PrinterError
 
 MAC = "00:11:22:33:44:55"
 ORIGIN = "https://bs.example"
+KEY = "test-key-0123456789abcdef0123456789abcdef"
+AUTH = {"Authorization": f"Bearer {KEY}"}
 
 
 @pytest.fixture
@@ -35,7 +37,7 @@ def api(monkeypatch):
     monkeypatch.setattr(server_module, "print_spec", fake_print)
     monkeypatch.setattr(server_module, "full_status", fake_status)
     monkeypatch.setattr(server_module, "bluez_connected", lambda mac: state["connected"])
-    srv = server_module.make_server("127.0.0.1", 0, MAC, 1, [ORIGIN])
+    srv = server_module.make_server("127.0.0.1", 0, MAC, 1, [ORIGIN], api_key=KEY)
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
     base = f"http://127.0.0.1:{srv.server_address[1]}"
@@ -44,9 +46,10 @@ def api(monkeypatch):
     srv.server_close()
 
 
-def request(url, method="GET", body=None, headers=None):
+def request(url, method="GET", body=None, headers=None, auth=True):
     data = None
-    hdrs = dict(headers or {})
+    hdrs = dict(AUTH if auth else {})
+    hdrs.update(headers or {})
     if body is not None:
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
         hdrs.setdefault("Content-Type", "application/json")
@@ -67,7 +70,8 @@ def test_health_is_fast_and_identifies_service(api):
     assert body["ok"] is True
     assert body["service"] == "btprintbridge"
     assert body["api"] == 1
-    assert body["printer"] == {"mac": MAC, "paired": True, "connected": True}
+    assert body["printer"] == {"paired": True, "connected": True}   # no MAC leak
+    assert body["auth"] == "bearer"
     assert calls["status"] == []                     # no RFCOMM for health
 
 
@@ -187,7 +191,7 @@ def test_preflight_allows_private_network(api):
 def test_print_without_mac_autodetect_miss(monkeypatch):
     monkeypatch.setattr(server_module, "resolve_mac", lambda configured: None)
     monkeypatch.setattr(server_module, "bluez_connected", lambda mac: False)
-    srv = server_module.make_server("127.0.0.1", 0, None, 1, [])
+    srv = server_module.make_server("127.0.0.1", 0, None, 1, [], api_key=KEY)
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
     try:
@@ -195,7 +199,7 @@ def test_print_without_mac_autodetect_miss(monkeypatch):
         status, _, body = request(base + "/print", "POST", {"text": "x"})
         assert status == 503 and body["error"] == "PRINTER_UNREACHABLE"
         _, _, health = request(base + "/health")
-        assert health["printer"] == {"mac": None, "paired": False, "connected": False}
+        assert health["printer"] == {"paired": False, "connected": False}
     finally:
         srv.shutdown()
         srv.server_close()
@@ -208,3 +212,122 @@ def test_bluez_connected_parses_bluetoothctl(monkeypatch):
     assert server_module.bluez_connected(MAC) is True
     P.stdout = "\tConnected: no\n"
     assert server_module.bluez_connected(MAC) is False
+
+
+# ---- security: API key, Host, Origin, Content-Type ---------------------------
+
+def test_health_needs_no_key(api):
+    base, _, _ = api
+    status, _, body = request(base + "/health", auth=False)
+    assert status == 200 and body["ok"] is True
+
+
+@pytest.mark.parametrize("headers", [
+    {},
+    {"Authorization": "Bearer wrong"},
+    {"Authorization": KEY},                          # missing scheme
+    {"Authorization": f"Basic {KEY}"},
+])
+def test_print_requires_api_key(api, headers):
+    base, calls, _ = api
+    status, _, body = request(base + "/print", "POST", {"text": "x"}, headers=headers, auth=False)
+    assert status == 401
+    assert body["error"] == "UNAUTHORIZED"
+    assert calls["print"] == []
+
+
+def test_status_requires_api_key(api):
+    base, calls, _ = api
+    status, _, body = request(base + "/status", auth=False)
+    assert status == 401 and body["error"] == "UNAUTHORIZED"
+    assert calls["status"] == []
+
+
+def test_simple_cross_site_post_is_rejected(api):
+    """A website can send a no-cors text/plain POST without preflight."""
+    base, calls, _ = api
+    status, _, body = request(base + "/print", "POST", b'{"text": "x"}', auth=False,
+                              headers={"Content-Type": "text/plain", "Origin": "https://evil.example"})
+    assert status in (401, 403)
+    assert calls["print"] == []
+
+
+def test_post_requires_json_content_type(api):
+    base, calls, _ = api
+    status, _, body = request(base + "/print", "POST", b'{"text": "x"}',
+                              headers={"Content-Type": "text/plain"})
+    assert status == 415 and body["error"] == "UNSUPPORTED_MEDIA_TYPE"
+    assert calls["print"] == []
+
+
+@pytest.mark.parametrize("host", ["evil.example", "evil.example:8710", "192.168.1.5:8710"])
+def test_foreign_host_header_is_rejected(api, host):
+    """DNS rebinding: a hostile domain resolving to 127.0.0.1."""
+    base, calls, _ = api
+    for path, method, body in [("/health", "GET", None), ("/print", "POST", {"text": "x"})]:
+        status, _, out = request(base + path, method, body, headers={"Host": host})
+        assert status == 403 and out["error"] == "FORBIDDEN"
+    assert calls["print"] == []
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "[::1]"])
+def test_loopback_host_headers_are_accepted(api, host):
+    base, _, _ = api
+    port = base.rsplit(":", 1)[1]
+    status, _, _ = request(base + "/health", headers={"Host": f"{host}:{port}"})
+    assert status == 200
+
+
+def test_foreign_origin_is_rejected_even_with_key(api):
+    base, calls, _ = api
+    status, _, body = request(base + "/print", "POST", {"text": "x"},
+                              headers={"Origin": "https://evil.example"})
+    assert status == 403 and body["error"] == "FORBIDDEN"
+    assert calls["print"] == []
+
+
+def test_allowed_origin_with_key_prints(api):
+    base, calls, _ = api
+    status, headers, _ = request(base + "/print", "POST", {"text": "x"}, headers={"Origin": ORIGIN})
+    assert status == 200 and len(calls["print"]) == 1
+    assert headers.get("Access-Control-Allow-Origin") == ORIGIN
+
+
+def test_preflight_allows_authorization_header(api):
+    base, _, _ = api
+    _, headers, _ = request(base + "/print", "OPTIONS", auth=False, headers={
+        "Origin": ORIGIN, "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "authorization,content-type",
+    })
+    allowed = headers.get("Access-Control-Allow-Headers", "").lower()
+    assert "authorization" in allowed and "content-type" in allowed
+
+
+def test_server_refuses_to_start_without_key():
+    with pytest.raises(ValueError):
+        server_module.make_server("127.0.0.1", 0, MAC, 1, [], api_key="")
+
+
+# ---- key file -----------------------------------------------------------------
+
+def test_key_file_is_created_private_and_stable(tmp_path):
+    import os
+    import stat
+    path = tmp_path / "conf" / "api-key"
+    key = server_module.load_or_create_key(path)
+    assert len(key) >= 32
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    assert stat.S_IMODE(os.stat(path.parent).st_mode) == 0o700
+    assert server_module.load_or_create_key(path) == key
+    new = server_module.load_or_create_key(path, rotate=True)
+    assert new != key and server_module.load_or_create_key(path) == new
+
+
+def test_key_file_with_loose_permissions_is_tightened(tmp_path):
+    import os
+    import stat
+    path = tmp_path / "api-key"
+    path.write_text("x" * 40 + "\n")
+    os.chmod(path, 0o644)
+    assert server_module.load_or_create_key(path) == "x" * 40
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600

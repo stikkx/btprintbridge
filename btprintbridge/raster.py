@@ -68,6 +68,10 @@ def pil_image_to_raster_bits(image: Image.Image) -> bytes:
     return bytes(out)
 
 
+# ~58 cm at 180 dpi; bounds CPU/memory for API-supplied images.
+MAX_IMAGE_WIDTH = 4096
+
+
 def png_to_alpha_raster(path, height: int) -> bytes:
     """Load a PNG (path or file object) and return its packed raster bits.
 
@@ -77,6 +81,8 @@ def png_to_alpha_raster(path, height: int) -> bytes:
     with Image.open(path) as im:
         if im.height != height:
             raise ValueError(f"image height is {im.height}, expected {height} pixels")
+        if im.width > MAX_IMAGE_WIDTH:
+            raise ValueError(f"image is too long ({im.width} px, max {MAX_IMAGE_WIDTH})")
         rgba = im.convert("RGBA")
         low, high = rgba.getchannel("A").getextrema()
         if low == high:

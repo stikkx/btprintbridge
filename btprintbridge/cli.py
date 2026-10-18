@@ -10,8 +10,12 @@ Subcommands:
     Print a label; stdout carries the summary JSON, errors go to stderr as
     ``btprintbridge: <message>`` with exit code 1.
 
-``serve [--host H] [--port P] [--origins a,b] [--mac M] [--channel N]``
-    Run the local HTTP print API (see ``btprintbridge.server``).
+``serve [--port P] [--origins a,b] [--mac M] [--channel N] [--key-file F]``
+    Run the local HTTP print API on 127.0.0.1 (see ``btprintbridge.server``).
+    Callers need the API key (``Authorization: Bearer <key>``).
+
+``api-key [--rotate] [--key-file F]``
+    Print the API key (created on first use); ``--rotate`` makes a new one.
 
 ``--mac`` defaults to autodetection via ``bluetoothctl devices Paired``
 (first device whose name starts with ``PT-``).
@@ -142,12 +146,32 @@ def cmd_print(args) -> int:
     return 0
 
 
+def _key_path(args):
+    from btprintbridge import server
+    return args.key_file or server.default_key_path()
+
+
+def cmd_api_key(args) -> int:
+    from btprintbridge import server
+    try:
+        print(server.load_or_create_key(_key_path(args), rotate=args.rotate))
+    except OSError as e:
+        return _fail(f"cannot access API key file: {e}")
+    return 0
+
+
 def cmd_serve(args) -> int:
     from btprintbridge import server
 
+    if args.host not in ("127.0.0.1", "::1", "localhost"):
+        return _fail("the print API only listens on a loopback address")
     origins = [o.strip() for o in (args.origins or "").split(",") if o.strip()]
     try:
-        srv = server.make_server(args.host, args.port, args.mac, args.channel, origins)
+        key = server.load_or_create_key(_key_path(args))
+    except OSError as e:
+        return _fail(f"cannot access API key file: {e}")
+    try:
+        srv = server.make_server(args.host, args.port, args.mac, args.channel, origins, key)
     except OSError as e:
         return _fail(f"cannot listen on {args.host}:{args.port}: {e}")
     host, port = srv.server_address[:2]
@@ -187,12 +211,18 @@ def build_parser() -> argparse.ArgumentParser:
     print_parser.set_defaults(func=cmd_print)
 
     serve_parser = subparsers.add_parser("serve", help="Run the local HTTP print API.")
-    serve_parser.add_argument("--host", default="127.0.0.1", help="bind address (default: 127.0.0.1)")
+    serve_parser.add_argument("--host", default="127.0.0.1", help="loopback bind address (default: 127.0.0.1)")
     serve_parser.add_argument("--port", type=int, default=8710, help="port (default: 8710)")
     serve_parser.add_argument("--origins", default="", help="comma-separated CORS origins allowed to call the API")
     serve_parser.add_argument("--mac", help="printer MAC address (default: autodetect per request)")
     serve_parser.add_argument("--channel", type=int, default=1, help="RFCOMM channel (default: 1)")
+    serve_parser.add_argument("--key-file", help="API key file (default: ~/.config/btprintbridge/api-key)")
     serve_parser.set_defaults(func=cmd_serve)
+
+    key_parser = subparsers.add_parser("api-key", help="Print the print-API key (created on first use).")
+    key_parser.add_argument("--rotate", action="store_true", help="replace the key with a new one")
+    key_parser.add_argument("--key-file", help="API key file (default: ~/.config/btprintbridge/api-key)")
+    key_parser.set_defaults(func=cmd_api_key)
 
     return parser
 

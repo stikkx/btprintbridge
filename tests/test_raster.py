@@ -20,6 +20,13 @@ def test_png_height_mismatch_rejected(tmp_path):
         raster.png_to_alpha_raster(tmp_path / "small.png", 128)
 
 
+def test_png_too_long_rejected_before_decoding(tmp_path):
+    # Tiny file, huge canvas: must be refused from the header alone.
+    Image.new("1", (raster.MAX_IMAGE_WIDTH + 1, 128)).save(tmp_path / "long.png")
+    with pytest.raises(ValueError, match="too long"):
+        raster.png_to_alpha_raster(tmp_path / "long.png", 128)
+
+
 def test_all_zero_line_emits_zero_command():
     out = raster.rasterize(b"\x00" * 16)
     assert out == [b"\x5A"]

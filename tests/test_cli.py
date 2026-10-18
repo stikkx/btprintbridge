@@ -54,9 +54,11 @@ def test_print_error_exit_code_and_stderr(monkeypatch, capsys, tmp_path):
     assert rc == 1 and "printer busy" in cap.err
 
 
-def test_serve_builds_server_from_args(monkeypatch):
+def test_serve_builds_server_from_args(monkeypatch, tmp_path):
     from btprintbridge import server
     seen = {}
+    keyfile = tmp_path / "key"
+    keyfile.write_text("k" * 43 + "\n")
 
     class FakeSrv:
         server_address = ("127.0.0.1", 8799)
@@ -65,21 +67,24 @@ def test_serve_builds_server_from_args(monkeypatch):
         def server_close(self):
             seen["closed"] = True
 
-    def fake_make(host, port, mac, channel, origins):
-        seen.update(host=host, port=port, mac=mac, channel=channel, origins=list(origins))
+    def fake_make(host, port, mac, channel, origins, api_key):
+        seen.update(host=host, port=port, mac=mac, channel=channel, origins=list(origins),
+                    api_key=api_key)
         return FakeSrv()
 
     monkeypatch.setattr(server, "make_server", fake_make)
     rc = cli.main(["serve", "--port", "8799", "--mac", "AA:BB:CC:DD:EE:FF",
-                   "--channel", "2", "--origins", "https://a.example, http://localhost:3000,"])
+                   "--channel", "2", "--origins", "https://a.example, http://localhost:3000,",
+                   "--key-file", str(keyfile)])
     assert rc == 0
     assert seen == {"host": "127.0.0.1", "port": 8799, "mac": "AA:BB:CC:DD:EE:FF",
                     "channel": 2, "origins": ["https://a.example", "http://localhost:3000"],
-                    "served": True, "closed": True}
+                    "api_key": "k" * 43, "served": True, "closed": True}
 
 
-def test_serve_port_in_use_fails_cleanly(monkeypatch, capsys):
+def test_serve_port_in_use_fails_cleanly(monkeypatch, capsys, tmp_path):
     from btprintbridge import server
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
 
     def boom(*a):
         raise OSError(98, "Address already in use")
@@ -102,3 +107,39 @@ def test_print_cut_flag_passed(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(cli, "print_spec", fake_print)
     rc = cli.main(["print", "--spec", str(spec), "--mac", "AA:BB:CC:DD:EE:FF", "--cut", "end"])
     assert rc == 0 and seen["cut"] == "end"
+
+
+def test_serve_creates_key_in_config_dir(monkeypatch, tmp_path):
+    from btprintbridge import server
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    seen = {}
+
+    class FakeSrv:
+        server_address = ("127.0.0.1", 8710)
+        def serve_forever(self): pass
+        def server_close(self): pass
+
+    def fake_make(host, port, mac, channel, origins, api_key):
+        seen["key"] = api_key
+        return FakeSrv()
+
+    monkeypatch.setattr(server, "make_server", fake_make)
+    assert cli.main(["serve"]) == 0
+    assert (tmp_path / "btprintbridge" / "api-key").read_text().strip() == seen["key"]
+
+
+def test_serve_refuses_non_loopback_host(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert cli.main(["serve", "--host", "0.0.0.0"]) == 1
+    assert "loopback" in capsys.readouterr().err
+
+
+def test_api_key_command_prints_and_rotates(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert cli.main(["api-key"]) == 0
+    first = capsys.readouterr().out.strip()
+    assert len(first) >= 32
+    assert cli.main(["api-key"]) == 0
+    assert capsys.readouterr().out.strip() == first
+    assert cli.main(["api-key", "--rotate"]) == 0
+    assert capsys.readouterr().out.strip() not in ("", first)
