@@ -14,7 +14,7 @@ _PHONE_RE = re.compile(r"^\+?[0-9 ()/.\-]+$")
 
 
 def _escape(value: str) -> str:
-    return (value.replace("\\", "\\\\").replace(",", "\\,").replace(";", "\;"))
+    return (value.replace("\\", "\\\\").replace(",", "\\,").replace(";", "\\;"))
 
 
 def validate(card) -> dict:

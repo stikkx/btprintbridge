@@ -13,7 +13,7 @@ def test_payload_has_name_email_phone():
 
 def test_payload_escapes_special_characters():
     p = vcard.payload("Doe, John; Jr\\", "", "")
-    assert "FN:Doe\\, John\; Jr\\\\\r\n" in p
+    assert "FN:Doe\\, John\\; Jr\\\\\r\n" in p
     assert "EMAIL" not in p and "TEL" not in p
 
 
