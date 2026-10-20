@@ -15,7 +15,9 @@ sudo pacman -S python-pillow python-qrcode
 ```
 
 Pair the printer once (`bluetoothctl` → `pair` / `trust`). Without `--mac`,
-the first paired device whose name starts with `PT-` is used.
+a paired device whose name starts with `PT-` is used (the connected one if
+there are several). The RFCOMM channel is found automatically (some units
+use channel 2) and remembered in `~/.cache/btprintbridge/channels.json`.
 
 ## CLI
 
