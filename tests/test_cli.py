@@ -190,10 +190,11 @@ def test_preview_writes_png_and_reports_layout(tmp_path, capsys):
     assert cli.main(["preview", "--spec", str(spec), "--tape", "12", "--out", str(out),
                      "--scale", "2"]) == 0
     info = json.loads(capsys.readouterr().out)
-    img = Image.open(out)
-    assert img.size[1] == 76 * 2
+    with Image.open(out) as img:
+        size = img.size
+    assert size[1] == 76 * 2
     assert info["tape_width"] == 12 and info["font_size"] > 0
-    assert info["length_mm"] == round(img.size[0] / 2 / 7.087, 1)
+    assert info["length_mm"] == round(size[0] / 2 / 7.087, 1)
 
 
 def test_preview_reports_spec_errors(tmp_path, capsys):

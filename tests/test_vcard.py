@@ -49,15 +49,45 @@ def test_validate_rejects_unknown_or_non_string_fields():
         vcard.validate("Max")
 
 
-def test_expand_preset_builds_text_and_qr():
+def test_expand_preset_builds_text_and_keeps_the_card():
     spec = expand_preset({"vcard": {"name": "Max Mustermann", "email": "max@example.com",
                                     "phone": "+49 170 1234567"}, "copies": 2})
     assert spec["text"] == "Max Mustermann\nmax@example.com\n+49 170 1234567"
-    assert spec["qr"]["value"].startswith("BEGIN:VCARD")
-    assert spec["qr"]["ec"] == "L"
+    assert spec["vcard"]["email"] == "max@example.com"   # QR is built at render time
+    assert "qr" not in spec
     assert spec["barcode"] is False and spec["copies"] == 2
-    assert "vcard" not in spec
-    _validate_spec(spec, None)                      # a normal text spec now
+    _validate_spec(spec, None)
+
+
+def test_payload_variants_go_from_complete_to_compact():
+    card = {"name": "Max Mustermann", "email": "max@example.com", "phone": "+49 170 1234567"}
+    full, lf, compact = vcard.payloads(card)
+    assert full == vcard.payload(**card)
+    assert "\r\n" not in lf and "FN:Max Mustermann" in lf
+    assert "FN:" not in compact and "N:Mustermann;Max" in compact
+    assert len(full) > len(lf) > len(compact)
+
+
+def test_12mm_vcard_uses_two_dot_modules():
+    card = {"name": "Max Mustermann", "email": "max@example.com", "phone": "+49 170 1234567"}
+    img = render.render_label(expand_preset({"vcard": card}), 12)
+    data = img.info["qr_payload"]
+    assert data == vcard.payloads(card)[-1]          # compact variant on 12 mm
+    assert 76 // _qr_modules(data, qrcode.constants.ERROR_CORRECT_L) >= 2
+
+
+def test_24mm_vcard_keeps_the_full_card():
+    card = {"name": "Max Mustermann", "email": "max@example.com", "phone": "+49 170 1234567"}
+    img = render.render_label(expand_preset({"vcard": card}), 24)
+    assert img.info["qr_payload"] == vcard.payload(**card)
+
+
+def test_too_long_vcard_is_refused_with_a_hint():
+    card = {"name": "Maximilian Alexander Mustermann-Schulze",
+            "email": "maximilian.alexander.mustermann-schulze@example-company.com",
+            "phone": "+49 170 1234567"}
+    with pytest.raises(ValueError, match="too long for 12 mm"):
+        render.render_label(expand_preset({"vcard": card}), 12)
 
 
 def test_expand_preset_keeps_custom_text_and_skips_empty_fields():
@@ -94,10 +124,3 @@ def test_qr_uses_whole_dot_modules_when_possible():
     assert rows[-1] - rows[0] + 1 == n * scale and abs(rows[0] - (75 - rows[-1])) <= 1
 
 
-def test_vcard_label_renders_on_12mm_with_two_dot_modules():
-    spec = expand_preset({"vcard": {"name": "Max Stick", "email": "max@stikkx.de",
-                                    "phone": "+49 170 1234567"}})
-    img = render.render_label(spec, 12)
-    assert img.size[1] == render.TAPE_DOTS[12]
-    data = spec["qr"]["value"]
-    assert 76 // _qr_modules(data, qrcode.constants.ERROR_CORRECT_L) >= 2

@@ -14,7 +14,7 @@ import subprocess
 import qrcode
 from PIL import Image, ImageDraw, ImageFont
 
-from btprintbridge import code128
+from btprintbridge import code128, vcard
 
 # Raster-height dots per tape width (mm). 12 mm: 76 checked with a
 # calibration print (2026-10-20, frames of 84/76/70/62/54 dots); 9/18 mm are
@@ -88,6 +88,23 @@ def _text_block(font, lines: list[str]) -> tuple[int, int, int]:
 
 _QR_EC = {"L": qrcode.constants.ERROR_CORRECT_L, "M": qrcode.constants.ERROR_CORRECT_M,
           "Q": qrcode.constants.ERROR_CORRECT_Q, "H": qrcode.constants.ERROR_CORRECT_H}
+
+
+def _qr_modules(data, ec: str) -> int:
+    qr = qrcode.QRCode(border=0, error_correction=_QR_EC.get(ec, _QR_EC["M"]))
+    qr.add_data(str(data))
+    qr.make(fit=True)
+    return qr.modules_count
+
+
+def _vcard_payload(card: dict, height: int, tape_width: int) -> str:
+    """Most complete vCard variant whose QR gets >= 2-dot modules; phone
+    cameras do not read denser codes off the tape."""
+    for data in vcard.payloads(card):
+        if height // _qr_modules(data, "L") >= 2:
+            return data
+    raise ValueError(f"vCard is too long for {tape_width} mm tape: shorten the name or "
+                     "email, or use a wider tape")
 
 
 def _qr_image(data, height: int, ec: str = "M") -> Image.Image:
@@ -215,8 +232,9 @@ def render_label(spec: dict, tape_width: int) -> Image.Image:
     if not lines and not qr_data and not barcode_data:
         raise ValueError("nothing to print")
 
-    qr_entry = spec.get("qr")
-    qr_ec = qr_entry.get("ec", "M") if isinstance(qr_entry, dict) else "M"
+    qr_ec = "M"
+    if isinstance(spec.get("vcard"), dict):
+        qr_data, qr_ec = _vcard_payload(spec["vcard"], height, tape_width), "L"
     qr_img = _qr_image(qr_data, height, qr_ec) if qr_data else None
     barcode_img = _barcode_image(barcode_data, height) if barcode_data else None
 
@@ -241,6 +259,7 @@ def render_label(spec: dict, tape_width: int) -> Image.Image:
     width = max(content + 2 * END_MARGIN, MIN_LABEL_LENGTH)
     canvas = Image.new("1", (width, height), 1)
     canvas.info["font_size"] = font.size if font is not None else 0
+    canvas.info["qr_payload"] = qr_data
     draw = ImageDraw.Draw(canvas)
 
     x = (width - content) // 2

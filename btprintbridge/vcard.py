@@ -44,6 +44,19 @@ def validate(card) -> dict:
     return out
 
 
+def payloads(card: dict) -> list[str]:
+    """Payload variants for *card*, most complete first: CRLF with N + FN,
+    LF with N + FN, LF with N only. Readers accept all three; the renderer
+    takes the first whose QR still gets 2-dot modules on the tape."""
+    full = payload(card["name"], card["email"], card["phone"])
+    lf = full.replace("\r\n", "\n")
+    if card["name"]:
+        compact = "\n".join(l for l in lf.split("\n") if not l.startswith("FN:"))
+    else:
+        compact = lf          # without a name FN is the only display name
+    return [full, lf, compact]
+
+
 def payload(name: str, email: str, phone: str) -> str:
     """vCard 3.0 text for the QR code."""
     given, _, family = name.rpartition(" ")

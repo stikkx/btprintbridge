@@ -52,21 +52,22 @@ MAX_COPIES = 100
 
 
 def expand_preset(spec: dict) -> dict:
-    """Turn a preset spec into a plain text spec (unchanged without preset).
+    """Validate a preset spec and fill in its text (unchanged without preset).
 
-    ``vcard: {name, email, phone}`` -> QR with a vCard (error correction L,
-    keeps the code small), text = the given fields one per line unless the
-    spec has its own ``text``, no barcode unless the spec sets one.
+    ``vcard: {name, email, phone}`` stays in the spec (checked and stripped);
+    the renderer builds the QR from it, because the payload variant depends
+    on the tape height. Text = the given fields one per line unless the spec
+    has its own ``text``; no barcode unless the spec sets one.
     """
     if "vcard" not in spec:
         return spec
     if spec.get("image") is not None:
         raise ValueError("'vcard' cannot be combined with 'image'")
     card = vcard.validate(spec["vcard"])
-    out = {k: v for k, v in spec.items() if k != "vcard"}
+    out = {k: v for k, v in spec.items() if k != "qr"}
+    out["vcard"] = card
     if not out.get("text"):
         out["text"] = "\n".join(card[k] for k in vcard.FIELDS if card[k])
-    out["qr"] = {"value": vcard.payload(card["name"], card["email"], card["phone"]), "ec": "L"}
     out.setdefault("barcode", False)
     return out
 
