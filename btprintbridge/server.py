@@ -285,6 +285,6 @@ class ApiServer(ThreadingHTTPServer):
         super().__init__(addr, ApiHandler)
 
 
-def make_server(host: str, port: int, mac: str | None, channel: int,
+def make_server(host: str, port: int, mac: str | None, channel: int | None,
                 origins, api_key: str) -> ApiServer:
     return ApiServer((host, port), mac, channel, list(origins), api_key)

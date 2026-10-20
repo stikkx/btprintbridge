@@ -15,7 +15,7 @@ from btprintbridge.status import parse_status_packet
 from btprintbridge.transport import (
     PrinterError,
     locked,
-    open_rfcomm,
+    open_printer,
     query_status,
     recv_packet,
 )
@@ -189,7 +189,7 @@ def _print_page(sock, media_width: int, canvas: bytes, cut: bool, final: bool) -
     _send(sock, PRINT if final else PRINT_NO_FEED)
 
 
-def print_spec(spec: dict, mac, channel=1, copies: int | None = None, force=False,
+def print_spec(spec: dict, mac, channel=None, copies: int | None = None, force=False,
                wait_timeout: float = 30.0, cut: str | None = None,
                lock_wait: float = 0) -> dict:
     """Validate *spec*, then print it as N cut labels over one RFCOMM session.
@@ -197,18 +197,19 @@ def print_spec(spec: dict, mac, channel=1, copies: int | None = None, force=Fals
     The status query opens the socket and initializes the printer; each copy
     is one page (see the page pattern above), the last page feeds and cuts
     immediately. The socket read
-    timeout is raised to *wait_timeout* after connecting (keep *open_rfcomm*'s
+    timeout is raised to *wait_timeout* after connecting (keep *open_printer*'s
     short connect timeout) because printing + cutting one label takes several
     seconds. ``spec.tape_width``, when present, must match the queried media
     width unless *force*. *cut* ``"each"`` (default) cuts every copy;
     ``"end"`` prints one strip cut once at the end. A printer reporting error
     flags is refused before anything is streamed (``NOT_READY``).
-    *lock_wait* lets a caller queue behind a running job.
+    *lock_wait* lets a caller queue behind a running job. *channel* None
+    finds the printer's RFCOMM channel (see ``open_printer``).
     Returns ``{"copies_printed": n, "media_width": mm}``.
     """
     total, mode = _validate_spec(spec, copies, cut)
     with locked(wait=lock_wait):
-        sock = open_rfcomm(mac, channel)
+        sock = open_printer(mac, channel)
         try:
             sock.settimeout(wait_timeout)
             status = query_status(sock)

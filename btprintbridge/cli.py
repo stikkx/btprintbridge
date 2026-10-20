@@ -18,7 +18,8 @@ Subcommands:
     Print the API key (created on first use); ``--rotate`` makes a new one.
 
 ``--mac`` defaults to autodetection via ``bluetoothctl devices Paired``
-(first device whose name starts with ``PT-``).
+(first device whose name starts with ``PT-``). ``--channel`` defaults to
+``auto``: the printer's RFCOMM channel is found and remembered per MAC.
 """
 
 import argparse
@@ -56,16 +57,45 @@ def paired_names() -> list[str]:
     return proc.stdout.splitlines()
 
 
-def mac_autodetect() -> str | None:
-    """MAC of the first paired device whose name starts with ``PT-``, or None.
+def _channel(value: str) -> int | None:
+    """``--channel``: 'auto' -> None (find it), else 1..30."""
+    if value.strip().lower() == "auto":
+        return None
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("channel must be 'auto' or a number") from None
+    if not 1 <= n <= 30:
+        raise argparse.ArgumentTypeError("channel must be between 1 and 30")
+    return n
 
+
+def bt_connected(mac: str) -> bool:
+    """BlueZ connection state of *mac* via ``bluetoothctl info``."""
+    try:
+        proc = subprocess.run(["bluetoothctl", "info", mac],
+                              capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return bool(re.search(r"^\s*Connected:\s*yes\s*$", proc.stdout or "", re.MULTILINE))
+
+
+def mac_autodetect() -> str | None:
+    """MAC of a paired device whose name starts with ``PT-``, or None.
+
+    With several paired printers the connected one wins, else the first.
     ``bluetoothctl devices Paired`` lines have the form ``Device <MAC> <name...>``.
     """
+    found = []
     for line in paired_names():
         parts = line.split(None, 2)
         if len(parts) == 3 and PT_NAME_RE.match(parts[2].strip()):
-            return parts[1]
-    return None
+            found.append(parts[1])
+    if len(found) > 1:
+        for mac in found:
+            if bt_connected(mac):
+                return mac
+    return found[0] if found else None
 
 
 def _fail(message: str) -> int:
@@ -196,14 +226,14 @@ def build_parser() -> argparse.ArgumentParser:
         "status", help="Show printer status; exit 0 even when unreachable."
     )
     status_parser.add_argument("--mac", help="printer MAC address (default: autodetect)")
-    status_parser.add_argument("--channel", type=int, default=1, help="RFCOMM channel (default: 1)")
+    status_parser.add_argument("--channel", type=_channel, default=None, help="RFCOMM channel or 'auto' (default: auto)")
     status_parser.add_argument("--json", action="store_true", help="output a single JSON line")
     status_parser.set_defaults(func=cmd_status)
 
     print_parser = subparsers.add_parser("print", help="Print a label from a spec JSON file.")
     print_parser.add_argument("--spec", required=True, help="label spec JSON file")
     print_parser.add_argument("--mac", help="printer MAC address (default: autodetect)")
-    print_parser.add_argument("--channel", type=int, default=1, help="RFCOMM channel (default: 1)")
+    print_parser.add_argument("--channel", type=_channel, default=None, help="RFCOMM channel or 'auto' (default: auto)")
     print_parser.add_argument("--force", action="store_true", help="print even if tape width mismatches spec")
     print_parser.add_argument("--copies", type=int, default=None, help="number of copies (overrides spec)")
     print_parser.add_argument("--cut", choices=("each", "end"), default=None,
@@ -215,7 +245,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--port", type=int, default=8710, help="port (default: 8710)")
     serve_parser.add_argument("--origins", default="", help="comma-separated CORS origins allowed to call the API")
     serve_parser.add_argument("--mac", help="printer MAC address (default: autodetect per request)")
-    serve_parser.add_argument("--channel", type=int, default=1, help="RFCOMM channel (default: 1)")
+    serve_parser.add_argument("--channel", type=_channel, default=None, help="RFCOMM channel or 'auto' (default: auto)")
     serve_parser.add_argument("--key-file", help="API key file (default: ~/.config/btprintbridge/api-key)")
     serve_parser.set_defaults(func=cmd_serve)
 

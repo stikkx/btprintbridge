@@ -38,6 +38,7 @@ class FakeSock:
 
 def status_packet(width, status_type=0x01, err1=0, err2=0):
     pkt = bytearray(32)
+    pkt[:3] = b"\x80\x20\x42"
     pkt[8] = err1
     pkt[9] = err2
     pkt[10] = width
@@ -70,7 +71,7 @@ def make_png(path, width, height):
 
 def fake_transport(monkeypatch, width, replies):
     sock = FakeSock(replies)
-    monkeypatch.setattr(print_module, "open_rfcomm", lambda mac, channel: sock)
+    monkeypatch.setattr(print_module, "open_printer", lambda mac, channel: sock)
     monkeypatch.setattr(
         print_module,
         "query_status",
@@ -243,7 +244,7 @@ def test_send_timeout_wrapped_as_printer_error(monkeypatch):
         raise socket.timeout()
 
     timeout_sock.send = raise_timeout
-    monkeypatch.setattr(print_module, "open_rfcomm", lambda mac, channel: timeout_sock)
+    monkeypatch.setattr(print_module, "open_printer", lambda mac, channel: timeout_sock)
     monkeypatch.setattr(
         print_module,
         "query_status",
@@ -346,7 +347,7 @@ def test_rendered_12mm_label_raster_is_mostly_white():
 
 def fake_transport_status(monkeypatch, width, replies, errors):
     sock = FakeSock(replies)
-    monkeypatch.setattr(print_module, "open_rfcomm", lambda mac, channel: sock)
+    monkeypatch.setattr(print_module, "open_printer", lambda mac, channel: sock)
     monkeypatch.setattr(
         print_module,
         "query_status",

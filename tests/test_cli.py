@@ -1,3 +1,4 @@
+import pytest
 """CLI contract tests for `btprintbridge status` / `print` + PT- autodetect."""
 
 import json
@@ -143,3 +144,38 @@ def test_api_key_command_prints_and_rotates(monkeypatch, capsys, tmp_path):
     assert capsys.readouterr().out.strip() == first
     assert cli.main(["api-key", "--rotate"]) == 0
     assert capsys.readouterr().out.strip() not in ("", first)
+
+
+@pytest.mark.parametrize("argv,expected", [([], None), (["--channel", "auto"], None), (["--channel", "2"], 2)])
+def test_channel_defaults_to_auto(monkeypatch, capsys, argv, expected):
+    seen = {}
+
+    def fake_status(mac, channel, lock_wait=0):
+        seen["channel"] = channel
+        return {"media_width": 12, "errors": []}
+
+    monkeypatch.setattr(cli, "full_status", fake_status)
+    assert cli.main(["status", "--mac", "00:11:22:33:44:55", "--json", *argv]) == 0
+    assert seen["channel"] == expected
+
+
+def test_channel_rejects_garbage():
+    with pytest.raises(SystemExit):
+        cli.main(["status", "--channel", "zwei"])
+
+
+def test_autodetect_prefers_the_connected_printer(monkeypatch):
+    monkeypatch.setattr(cli, "paired_names", lambda: [
+        "Device 00:11:22:33:44:55 PT-P710BT1234",
+        "Device 66:77:88:99:AA:BB PT-P710BT5678",
+    ])
+    monkeypatch.setattr(cli, "bt_connected", lambda mac: mac == "66:77:88:99:AA:BB")
+    assert cli.mac_autodetect() == "66:77:88:99:AA:BB"
+    monkeypatch.setattr(cli, "bt_connected", lambda mac: False)
+    assert cli.mac_autodetect() == "00:11:22:33:44:55"     # none connected: first
+
+
+def test_autodetect_single_printer_skips_connection_check(monkeypatch):
+    monkeypatch.setattr(cli, "paired_names", lambda: ["Device 00:11:22:33:44:55 PT-P710BT1234"])
+    monkeypatch.setattr(cli, "bt_connected", lambda mac: (_ for _ in ()).throw(AssertionError))
+    assert cli.mac_autodetect() == "00:11:22:33:44:55"
