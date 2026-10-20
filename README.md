@@ -20,7 +20,7 @@ the first paired device whose name starts with `PT-` is used.
 ## CLI
 
 ```bash
-btprintbridge status [--mac M] [--channel 1] [--json]
+btprintbridge status [--mac M] [--channel auto|N] [--json]
 btprintbridge print --spec label.json [--copies N] [--cut each|end] [--force]
 btprintbridge serve [--port 8710] [--origins https://app.example,...]
 btprintbridge api-key [--rotate]
