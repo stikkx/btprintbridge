@@ -39,9 +39,10 @@ def test_qr_is_square_left_at_full_height():
     img = render.render_label({"text": "Hi", "qr": {"value": "X"}, "barcode": None}, 24)
     assert img.size[1] == height
     left = _dark_columns(img)[0]
-    # QR is the first element, full tape height, after the end margin
-    assert img.getpixel((left, 0)) == 0
-    assert img.getpixel((left, height - 1)) == 0
+    # QR is the first element (finder column), vertically centered
+    rows = [y for y in range(height) if img.getpixel((left, y)) == 0]
+    assert abs(rows[0] - (height - 1 - rows[-1])) <= 1
+    assert rows[-1] - rows[0] >= height * 0.75
 
 
 def test_barcode_is_last_and_dark():
@@ -87,10 +88,10 @@ def test_qr_null_value_falls_back_to_label_text():
     height = render.TAPE_DOTS[24]
     img = render.render_label({"text": "Hi", "qr": {"value": None}, "barcode": None}, 24)
     assert img.size[1] == height
-    # QR rendered from "Hi": first element, full printable height
+    # QR rendered from "Hi": first element, vertically centered
     left = _dark_columns(img)[0]
-    assert img.getpixel((left, 0)) == 0
-    assert img.getpixel((left, height - 1)) == 0
+    rows = [y for y in range(height) if img.getpixel((left, y)) == 0]
+    assert abs(rows[0] - (height - 1 - rows[-1])) <= 1
 
 
 def test_null_codes_with_empty_text_rejected():
@@ -104,7 +105,8 @@ def test_null_code_with_text_present_renders():
     spec = {"text": "x", "qr": {"value": None}, "barcode": None}
     img = render.render_label(spec, 24)
     assert img.size[1] == height
-    assert img.getpixel((_dark_columns(img)[0], 0)) == 0  # QR with value "x" was drawn
+    left = _dark_columns(img)[0]                          # QR with value "x" was drawn
+    assert sum(img.getpixel((left, y)) == 0 for y in range(height)) > height // 2
 
 
 def test_false_codes_are_disabled():
@@ -166,12 +168,12 @@ def test_two_line_12mm_text_fills_the_band():
     assert rows[-1] - rows[0] >= height * 0.8
 
 
-def test_two_lines_do_not_touch():
-    img = render.render_label({"text": "Hgjpy\nHgjpy", "qr": False, "barcode": False}, 12)
-    rows = set(_ink_rows(img))
-    first, last = min(rows), max(rows)
-    gap = [y for y in range(first, last + 1) if y not in rows]
-    assert len(gap) >= render.LINE_GAP          # blank rows between the lines
+def test_line_gap_grows_with_the_font():
+    img = render.render_label({"text": "HHH\nHHH", "qr": False, "barcode": False}, 24)
+    rows = _ink_rows(img)
+    gap = max(b - a for a, b in zip(rows, rows[1:])) - 1
+    line = rows[-1] - rows[0] + 1 - gap
+    assert gap >= 0.2 * (line / 2)              # ~1/4 of a line, not 2 dots
 
 
 def test_single_line_text_is_bigger_than_two_lines():
@@ -195,3 +197,38 @@ def test_font_falls_back_when_preferred_font_is_missing(monkeypatch):
         assert font.getlength("Hi") > 0
     finally:
         render._font_path.cache_clear()
+
+
+
+# ---- font size --------------------------------------------------------------
+
+def _ink_height(img):
+    rows = _ink_rows(img)
+    return rows[-1] - rows[0] + 1
+
+
+def test_fixed_font_size_is_used_when_it_fits():
+    small = render.render_label({"text": "AB", "font_size": 20}, 12)
+    auto = render.render_label({"text": "AB"}, 12)
+    assert small.info["font_size"] == 20
+    assert _ink_height(small) < _ink_height(auto)
+    assert auto.info["font_size"] > 20
+
+
+def test_too_big_font_size_shrinks_to_fit():
+    img = render.render_label({"text": "AB\nCD", "font_size": 200}, 12)
+    auto = render.render_label({"text": "AB\nCD"}, 12)
+    assert img.info["font_size"] == auto.info["font_size"]
+
+
+@pytest.mark.parametrize("bad", [0, 5, 201, "big", True, 12.5])
+def test_invalid_font_size_rejected(bad):
+    from btprintbridge.print import _validate_spec
+    with pytest.raises(ValueError, match="font_size"):
+        _validate_spec({"text": "x", "font_size": bad}, None)
+
+
+def test_auto_font_size_values_accepted():
+    from btprintbridge.print import _validate_spec
+    for ok in ("auto", None, 6, 200):
+        _validate_spec({"text": "x", "font_size": ok}, None)

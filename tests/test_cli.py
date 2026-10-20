@@ -179,3 +179,25 @@ def test_autodetect_single_printer_skips_connection_check(monkeypatch):
     monkeypatch.setattr(cli, "paired_names", lambda: ["Device 00:11:22:33:44:55 PT-P710BT1234"])
     monkeypatch.setattr(cli, "bt_connected", lambda mac: (_ for _ in ()).throw(AssertionError))
     assert cli.mac_autodetect() == "00:11:22:33:44:55"
+
+
+
+def test_preview_writes_png_and_reports_layout(tmp_path, capsys):
+    from PIL import Image
+    spec = tmp_path / "s.json"
+    spec.write_text(json.dumps({"vcard": {"name": "Max Stick", "phone": "0170 1"}}))
+    out = tmp_path / "p.png"
+    assert cli.main(["preview", "--spec", str(spec), "--tape", "12", "--out", str(out),
+                     "--scale", "2"]) == 0
+    info = json.loads(capsys.readouterr().out)
+    img = Image.open(out)
+    assert img.size[1] == 76 * 2
+    assert info["tape_width"] == 12 and info["font_size"] > 0
+    assert info["length_mm"] == round(img.size[0] / 2 / 7.087, 1)
+
+
+def test_preview_reports_spec_errors(tmp_path, capsys):
+    spec = tmp_path / "s.json"
+    spec.write_text(json.dumps({"vcard": {"email": "nope"}}))
+    assert cli.main(["preview", "--spec", str(spec), "--out", str(tmp_path / "p.png")]) == 1
+    assert "email" in capsys.readouterr().err

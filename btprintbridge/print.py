@@ -9,7 +9,7 @@ community reference tool ``pt-p710bt-label-maker``.
 
 import io
 
-from btprintbridge import raster
+from btprintbridge import raster, vcard
 from btprintbridge.render import TAPE_DOTS, barcode_problem, barcode_value, render_label
 from btprintbridge.status import parse_status_packet
 from btprintbridge.transport import (
@@ -51,6 +51,26 @@ CUT_MODES = ("each", "end")
 MAX_COPIES = 100
 
 
+def expand_preset(spec: dict) -> dict:
+    """Turn a preset spec into a plain text spec (unchanged without preset).
+
+    ``vcard: {name, email, phone}`` -> QR with a vCard (error correction L,
+    keeps the code small), text = the given fields one per line unless the
+    spec has its own ``text``, no barcode unless the spec sets one.
+    """
+    if "vcard" not in spec:
+        return spec
+    if spec.get("image") is not None:
+        raise ValueError("'vcard' cannot be combined with 'image'")
+    card = vcard.validate(spec["vcard"])
+    out = {k: v for k, v in spec.items() if k != "vcard"}
+    if not out.get("text"):
+        out["text"] = "\n".join(card[k] for k in vcard.FIELDS if card[k])
+    out["qr"] = {"value": vcard.payload(card["name"], card["email"], card["phone"]), "ec": "L"}
+    out.setdefault("barcode", False)
+    return out
+
+
 def _validate_spec(spec: dict, copies, cut=None) -> tuple[int, str]:
     """Validate the spec at entry (before any socket opens).
 
@@ -69,6 +89,11 @@ def _validate_spec(spec: dict, copies, cut=None) -> tuple[int, str]:
             entry = spec.get(key)
             if isinstance(entry, dict) and not isinstance(entry.get("value"), (str, type(None))):
                 raise ValueError(f"{key} value must be a string or null")
+        font_size = spec.get("font_size")
+        if font_size not in (None, "auto") and (
+                isinstance(font_size, bool) or not isinstance(font_size, int)
+                or not 6 <= font_size <= 200):
+            raise ValueError("font_size must be 'auto' or a whole number from 6 to 200")
         barcode = barcode_value(spec.get("barcode"), text)
         if barcode is not None:
             problem = barcode_problem(barcode)
@@ -207,6 +232,7 @@ def print_spec(spec: dict, mac, channel=None, copies: int | None = None, force=F
     finds the printer's RFCOMM channel (see ``open_printer``).
     Returns ``{"copies_printed": n, "media_width": mm}``.
     """
+    spec = expand_preset(spec)
     total, mode = _validate_spec(spec, copies, cut)
     with locked(wait=lock_wait):
         sock = open_printer(mac, channel)

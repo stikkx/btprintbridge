@@ -25,6 +25,7 @@ use channel 2) and remembered in `~/.cache/btprintbridge/channels.json`.
 btprintbridge status [--mac M] [--channel auto|N] [--json]
 btprintbridge print --spec label.json [--copies N] [--cut each|end] [--force]
 btprintbridge serve [--port 8710] [--origins https://app.example,...]
+btprintbridge preview --spec label.json [--tape 12] --out label.png [--scale 3]
 btprintbridge api-key [--rotate]
 ```
 
@@ -37,9 +38,20 @@ Label spec (`print --spec`), exactly one of `text` / `image`:
   "barcode": false,                 // Code128, rendered vertically on the right
   "copies": 1,                      // 1..100
   "cut": "each",                    // "each" = cut every copy, "end" = one strip
-  "tape_width": 12                  // optional; refuse if another tape is loaded
+  "tape_width": 12,                 // optional; refuse if another tape is loaded
+  "font_size": "auto"               // or a size in dots; shrunk if it does not fit
 }
 ```
+
+vCard preset (contact QR for phone cameras; the fields become the text lines
+unless `text` is given):
+
+```json
+{"vcard": {"name": "Max Mustermann", "email": "max@example.com", "phone": "+49 170 1234567"}}
+```
+
+`preview` renders a spec exactly like `print` (no printer needed) and prints
+`{"file","tape_width","length_mm","font_size"}`.
 
 `image` is a PNG path (CLI) whose height equals the tape's printable dots:
 9 mm 32, 12 mm 54, 18 mm 86, 24 mm 128. Transparent PNGs: alpha > 0 is ink;

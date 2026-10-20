@@ -14,6 +14,10 @@ Subcommands:
     Run the local HTTP print API on 127.0.0.1 (see ``btprintbridge.server``).
     Callers need the API key (``Authorization: Bearer <key>``).
 
+``preview --spec spec.json [--tape 12] --out label.png [--scale 3]``
+    Render the label like ``print`` would, without a printer; stdout carries
+    ``{"file", "tape_width", "length_mm", "font_size"}``.
+
 ``api-key [--rotate] [--key-file F]``
     Print the API key (created on first use); ``--rotate`` makes a new one.
 
@@ -176,6 +180,37 @@ def cmd_print(args) -> int:
     return 0
 
 
+def cmd_preview(args) -> int:
+    from PIL import Image
+
+    from btprintbridge.print import _validate_spec, expand_preset
+    from btprintbridge.render import DOTS_PER_MM, render_label
+
+    try:
+        with open(args.spec, encoding="utf-8") as f:
+            spec = json.load(f)
+        if not isinstance(spec, dict) or spec.get("image") is not None:
+            raise ValueError("preview needs a text or vcard spec")
+        spec = expand_preset(spec)
+        _validate_spec(spec, None)
+        img = render_label(spec, args.tape)
+    except (OSError, ValueError) as e:
+        return _fail(str(e))
+    scale = max(1, min(8, args.scale))
+    out = img.convert("L").resize((img.size[0] * scale, img.size[1] * scale), Image.Resampling.NEAREST)
+    try:
+        out.save(args.out, format="PNG")
+    except OSError as e:
+        return _fail(f"cannot write preview: {e}")
+    print(json.dumps({
+        "file": args.out,
+        "tape_width": args.tape,
+        "length_mm": round(img.size[0] / DOTS_PER_MM, 1),
+        "font_size": img.info.get("font_size", 0),
+    }))
+    return 0
+
+
 def _key_path(args):
     from btprintbridge import server
     return args.key_file or server.default_key_path()
@@ -248,6 +283,14 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--channel", type=_channel, default=None, help="RFCOMM channel or 'auto' (default: auto)")
     serve_parser.add_argument("--key-file", help="API key file (default: ~/.config/btprintbridge/api-key)")
     serve_parser.set_defaults(func=cmd_serve)
+
+    preview_parser = subparsers.add_parser("preview", help="Render a label to PNG without printing.")
+    preview_parser.add_argument("--spec", required=True, help="label spec JSON file")
+    preview_parser.add_argument("--tape", type=int, default=12, choices=(9, 12, 18, 24),
+                                help="tape width in mm (default: 12)")
+    preview_parser.add_argument("--out", required=True, help="PNG file to write")
+    preview_parser.add_argument("--scale", type=int, default=3, help="pixel scale 1-8 (default: 3)")
+    preview_parser.set_defaults(func=cmd_preview)
 
     key_parser = subparsers.add_parser("api-key", help="Print the print-API key (created on first use).")
     key_parser.add_argument("--rotate", action="store_true", help="replace the key with a new one")
