@@ -7,13 +7,19 @@ Code128 last/right — elements are never stacked above or below each other.
 Pure rendering only; printer I/O lives in the transport/raster tasks.
 """
 
+import functools
+import os
+import subprocess
+
 import qrcode
 from PIL import Image, ImageDraw, ImageFont
 
 from btprintbridge import code128
 
-# Raster-height dots per tape width (mm). VERIFY WITH REAL PRINTS (spec item #3).
-TAPE_DOTS: dict[int, int] = {9: 32, 12: 54, 18: 86, 24: 128}
+# Raster-height dots per tape width (mm). 12 mm: 76 checked with a
+# calibration print (2026-10-20, frames of 84/76/70/62/54 dots); 9/18 mm are
+# the values of BinaryStock's former agent, not yet checked here.
+TAPE_DOTS: dict[int, int] = {9: 52, 12: 76, 18: 120, 24: 128}
 
 # Nominal label-length budget used to auto-fit text; the extra length after
 # the codes is the "remaining width" the widest text line must fit into.
@@ -26,14 +32,55 @@ END_MARGIN = 21    # ~3 mm
 CODE_GAP = 14      # ~2 mm
 MIN_LABEL_LENGTH = 180
 _MIN_FONT_SIZE = 6
-_FONT_PATH = "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"
+# Text uses the letters' real ink height, not the font's line height (which
+# adds empty ascender/descender room): V_PAD blank dots stay at the band's
+# top and bottom, LINE_GAP blank dots between lines.
+V_PAD = 2
+LINE_GAP = 2
+_FONT_CANDIDATES = (
+    "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/noto/NotoSans-Bold.ttf",
+)
+
+
+@functools.cache
+def _font_path() -> str | None:
+    """First installed bold sans font; fontconfig's choice as last resort."""
+    for path in _FONT_CANDIDATES:
+        if os.path.exists(path):
+            return path
+    try:
+        out = subprocess.run(["fc-match", "-f", "%{file}", "sans:bold"],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    return out if out and os.path.exists(out) else None
 
 
 def _load_font(size: int):
-    try:
-        return ImageFont.truetype(_FONT_PATH, size)
-    except OSError:
-        return ImageFont.load_default(size)
+    path = _font_path()
+    if path:
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            pass
+    return ImageFont.load_default(size)
+
+
+def _text_block(font, lines: list[str]) -> tuple[int, int, int]:
+    """``(top, pitch, block_height)`` of *lines* drawn with *font*.
+
+    All lines share one pitch (ink height of the tallest line + LINE_GAP) so
+    baselines stay evenly spaced; *top* is the ink offset from the draw
+    origin. Blank lines keep their slot.
+    """
+    boxes = [font.getbbox(line) for line in lines if line.strip()] or [font.getbbox("H")]
+    top = min(b[1] for b in boxes)
+    ink = max(b[3] for b in boxes) - top
+    pitch = ink + LINE_GAP
+    return top, pitch, pitch * len(lines) - LINE_GAP
 
 
 def _qr_image(data, height: int) -> Image.Image:
@@ -96,25 +143,34 @@ def barcode_problem(value: str) -> str | None:
     return None
 
 
-def _fit_text(lines: list[str], height: int, remaining_width: int):
-    """Pick the largest font size whose lines fit height and remaining width.
+def _text_extent(font, lines: list[str]) -> tuple[int, int]:
+    """``(left, width)`` of the lines' ink along the label (left-aligned)."""
+    boxes = [font.getbbox(line) for line in lines if line.strip()] or [font.getbbox("H")]
+    left = min(b[0] for b in boxes)
+    return left, max(b[2] for b in boxes) - left
 
-    Starts at printable height / line count and shrinks (floor at
-    ``_MIN_FONT_SIZE``) until every constraint holds; returns the final font.
-    """
-    size = max(_MIN_FONT_SIZE, height // max(1, len(lines)))
-    font = _load_font(size)
-    while size > _MIN_FONT_SIZE:
-        ascent, descent = font.getmetrics()
-        if (ascent + descent) * len(lines) > height:
-            size -= 1
-            font = _load_font(size)
-            continue
-        if max(font.getlength(line) for line in lines) <= remaining_width:
-            break
-        size -= 1
+
+def _fit_text(lines: list[str], height: int, remaining_width: int):
+    """Largest font whose text block fits the band (minus V_PAD) and the
+    remaining width; ``_MIN_FONT_SIZE`` when nothing fits (caller checks)."""
+    usable = height - 2 * V_PAD
+
+    def fits(size):
         font = _load_font(size)
-    return font
+        if _text_block(font, lines)[2] > usable:
+            return False
+        return _text_extent(font, lines)[1] <= remaining_width
+
+    lo, hi = _MIN_FONT_SIZE, max(_MIN_FONT_SIZE, height * 2)
+    if not fits(lo):
+        return _load_font(lo)
+    while lo < hi:                      # largest size that fits
+        mid = (lo + hi + 1) // 2
+        if fits(mid):
+            lo = mid
+        else:
+            hi = mid - 1
+    return _load_font(lo)
 
 
 def render_label(spec: dict, tape_width: int) -> Image.Image:
@@ -148,13 +204,12 @@ def render_label(spec: dict, tape_width: int) -> Image.Image:
     reserved += CODE_GAP * (len(segments) - 1) + 2 * END_MARGIN
     remaining_width = max(1, _MAX_LABEL_LENGTH - reserved)
 
-    text_width = 0
+    text_width = text_left = 0
     font = None
     if lines:
         font = _fit_text(lines, height, remaining_width)
-        text_width = max(font.getlength(line) for line in lines)
-        ascent, descent = font.getmetrics()
-        if text_width > remaining_width or (ascent + descent) * len(lines) > height:
+        text_left, text_width = _text_extent(font, lines)
+        if text_width > remaining_width or _text_block(font, lines)[2] > height - 2 * V_PAD:
             raise ValueError(f"label does not fit on tape of {tape_width} mm")
 
     content = int(sum(
@@ -170,10 +225,9 @@ def render_label(spec: dict, tape_width: int) -> Image.Image:
             canvas.paste(seg, (x, 0))
             x += seg.size[0] + CODE_GAP
             continue
-        ascent, descent = font.getmetrics()
-        advance = ascent + descent
-        y = (height - advance * len(lines)) // 2
+        top, pitch, block = _text_block(font, lines)
+        y = (height - block) // 2 - top
         for i, line in enumerate(lines):
-            draw.text((x, y + i * advance), line, font=font, fill=0)
+            draw.text((x - text_left, y + i * pitch), line, font=font, fill=0)
         x += int(text_width) + CODE_GAP
     return canvas

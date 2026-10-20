@@ -266,7 +266,7 @@ def _png_raster_bytes(width_px, height_px):
 
 
 def test_12mm_embeds_band_centered_in_16_byte_lines(monkeypatch, tmp_path):
-    # 12 mm: TAPE_DOTS[12]=54-dot printable band embedded CENTERED into each
+    # 12 mm: TAPE_DOTS[12]=76-dot printable band embedded CENTERED into each
     # 128-dot head line; raster lines are always 16 bytes (head width).
     make_png(tmp_path / "img.png", 8, TAPE_DOTS[12])
     sock = fake_transport(monkeypatch, 12, [completed_packet(12)])
@@ -280,9 +280,9 @@ def test_12mm_embeds_band_centered_in_16_byte_lines(monkeypatch, tmp_path):
         + b"\x00\x00"
     )
     assert info in stream
-    # full-dark column, centered: off=(128-54)//2=37 -> bits 37..90 set:
-    # blank 4 bytes, \x07, \xff*6, \xe0, blank 4 bytes
-    dark_col = bytes(4) + b"\x07" + b"\xff" * 6 + b"\xe0" + bytes(4)
+    # full-dark column, centered: off=(128-76)//2=26 -> bits 26..101 set:
+    # blank 3 bytes, \x3f, \xff*8, \xfc, blank 3 bytes
+    dark_col = bytes(3) + b"\x3f" + b"\xff" * 8 + b"\xfc" + bytes(3)
     payload = raster_module.packbits_encode(dark_col)
     dark_cmd = b"\x47" + len(payload).to_bytes(2, "little") + payload
     assert stream.count(dark_cmd) == 4

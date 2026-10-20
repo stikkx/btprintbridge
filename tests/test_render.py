@@ -73,7 +73,7 @@ def test_label_has_minimum_length_and_content_is_centered():
     assert img.size[0] >= render.MIN_LABEL_LENGTH
     dark = _dark_columns(img)
     left, right = dark[0], img.size[0] - 1 - dark[-1]
-    assert abs(left - right) <= 2
+    assert abs(left - right) <= 4      # glyph box vs 1-bit ink: < 0.6 mm
 
 
 def test_full_spec_composite():
@@ -109,8 +109,8 @@ def test_null_code_with_text_present_renders():
 
 def test_false_codes_are_disabled():
     img = render.render_label({"text": "Hi", "qr": False, "barcode": False}, 24)
-    dark = _dark_columns(img)
-    assert dark[-1] - dark[0] < render.TAPE_DOTS[24]  # no 128px-wide QR/barcode block
+    plain = render.render_label({"text": "Hi"}, 24)
+    assert img.tobytes() == plain.tobytes()            # no QR/barcode block
 
 
 def test_pathological_text_overflow_raises():
@@ -142,3 +142,56 @@ def test_multiline_label_with_both_codes_renders():
     img = render.render_label({"text": "Shelf A-3\nDrawer 2", "qr": {"value": None},
                                "barcode": {"value": None}}, 12)
     assert img.size[1] == render.TAPE_DOTS[12]
+
+
+
+# ---- vertical space: band per tape, ink-based line pitch, font fallback ------
+
+def _ink_rows(img):
+    w, h = img.size
+    return [y for y in range(h) if any(img.getpixel((x, y)) == 0 for x in range(w))]
+
+
+def test_12mm_band_is_76_dots():
+    # hardware-checked 2026-10-20 (calibration label): 76 dots fit 12 mm tape
+    assert render.TAPE_DOTS[12] == 76
+
+
+def test_two_line_12mm_text_fills_the_band():
+    img = render.render_label({"text": "GOP-243\nGOP-BN-002", "qr": False, "barcode": False}, 12)
+    rows = _ink_rows(img)
+    height = render.TAPE_DOTS[12]
+    # ink spans most of the band but keeps the padding free
+    assert rows[0] >= render.V_PAD and rows[-1] <= height - 1 - render.V_PAD
+    assert rows[-1] - rows[0] >= height * 0.8
+
+
+def test_two_lines_do_not_touch():
+    img = render.render_label({"text": "Hgjpy\nHgjpy", "qr": False, "barcode": False}, 12)
+    rows = set(_ink_rows(img))
+    first, last = min(rows), max(rows)
+    gap = [y for y in range(first, last + 1) if y not in rows]
+    assert len(gap) >= render.LINE_GAP          # blank rows between the lines
+
+
+def test_single_line_text_is_bigger_than_two_lines():
+    one = render._fit_text(["GOP-243"], render.TAPE_DOTS[12], 900)
+    two = render._fit_text(["GOP-243", "GOP-BN-002"], render.TAPE_DOTS[12], 900)
+    assert one.size > two.size
+
+
+def test_blank_line_keeps_its_slot():
+    img = render.render_label({"text": "AB\n\nCD", "qr": False, "barcode": False}, 24)
+    rows = _ink_rows(img)
+    gap = max(b - a for a, b in zip(rows, rows[1:]))
+    assert gap > 20                              # empty middle line stays empty
+
+
+def test_font_falls_back_when_preferred_font_is_missing(monkeypatch):
+    monkeypatch.setattr(render, "_FONT_CANDIDATES", ("/nonexistent/a.ttf",))
+    render._font_path.cache_clear()
+    try:
+        font = render._load_font(20)
+        assert font.getlength("Hi") > 0
+    finally:
+        render._font_path.cache_clear()
